@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime
 import logging
 from collections.abc import Mapping
@@ -38,7 +39,7 @@ class HermesATOFSubscriber:
             "scope_name": event.get("scope_name", event.get("name", "")),
             "scope_type": event.get("scope_type", ""),
             "timestamp": event.get("timestamp", datetime.datetime.now(datetime.timezone.utc).isoformat()),
-            "data": event.get("data", {}),
+            "data": copy.deepcopy(event.get("data", {})),
         }
 
     @property

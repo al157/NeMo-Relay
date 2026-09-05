@@ -37,7 +37,7 @@ def add_nemo_relay_integration(
     observed.update(overrides)
 
     agent_name = observed.get("agent_name", "hermes-agent")
-    blocked_tools = list(observed.get("blocked_tools", ()))
+    blocked_tools = list(observed.get("blocked_tools") or ())
     max_tool_args_size = int(observed.get("max_tool_args_size", 65536))
 
     middleware = list(observed.get("middleware", ()))

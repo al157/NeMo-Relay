@@ -18,6 +18,14 @@ if typing.TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
+def _resolve_scope_type(scope_type_name: str) -> typing.Any:
+    """Resolve a ScopeType member by name, falling back to the name string."""
+    try:
+        return getattr(nemo_relay.ScopeType, scope_type_name)
+    except AttributeError:
+        return scope_type_name
+
+
 class _CompletedScope(typing.NamedTuple):
     """A scope that has ended but cannot yet be popped (LIFO ordering)."""
     handle: nemo_relay.ScopeHandle
@@ -67,17 +75,17 @@ class NemoRelayHermesCallbackHandler:
         try:
             handle = nemo_relay.scope.push(
                 f"session:{session_id}",
-                nemo_relay.ScopeType.Run,
+                _resolve_scope_type("Run"),
                 data={"agent_name": self._agent_name, "session_id": session_id},
             )
             with self._lock:
-                self._active_scopes[session_id] = handle
+                self._active_scopes[f"session:{session_id}"] = handle
         except Exception:
             _logger.debug("on_session_start failed", exc_info=True)
 
     def on_session_end(self, session_id: str, *args: typing.Any, **kwargs: typing.Any) -> None:
         """Close the Run scope for the session."""
-        self._close_scope(session_id)
+        self._close_scope(f"session:{session_id}")
 
     def on_turn_start(
         self,
@@ -88,20 +96,20 @@ class NemoRelayHermesCallbackHandler:
     ) -> None:
         """Open a Turn scope as a child of the current top scope."""
         try:
-            parent = self._active_scopes.get(session_id)
+            parent = self._active_scopes.get(f"session:{session_id}")
             handle = nemo_relay.scope.push(
                 f"turn:{turn_id}",
-                nemo_relay.ScopeType.Turn,
+                _resolve_scope_type("Turn"),
                 handle=parent,
                 data={"turn_id": turn_id},
             )
             with self._lock:
-                self._active_scopes[turn_id] = handle
+                self._active_scopes[f"turn:{turn_id}"] = handle
         except Exception:
             _logger.debug("on_turn_start failed", exc_info=True)
 
     def on_turn_end(self, turn_id: str, *args: typing.Any, **kwargs: typing.Any) -> None:
-        self._close_scope(turn_id)
+        self._close_scope(f"turn:{turn_id}")
 
     def on_tool_call_start(
         self,
@@ -115,12 +123,12 @@ class NemoRelayHermesCallbackHandler:
         try:
             handle = nemo_relay.scope.push(
                 tool_name,
-                nemo_relay.ScopeType.Function,
+                _resolve_scope_type("Function"),
                 data={"tool_call_id": tool_call_id, "tool_name": tool_name},
                 input=args,
             )
             with self._lock:
-                self._active_scopes[tool_call_id] = handle
+                self._active_scopes[f"tool:{tool_call_id}"] = handle
         except Exception:
             _logger.debug("on_tool_call_start failed", exc_info=True)
 
@@ -131,7 +139,7 @@ class NemoRelayHermesCallbackHandler:
         *args: typing.Any,
         **kwargs: typing.Any,
     ) -> None:
-        self._close_scope(tool_call_id, output={"result": str(result)[:2048]} if result is not None else None)
+        self._close_scope(f"tool:{tool_call_id}", output={"result": str(result)[:2048]} if result is not None else None)
 
     def on_llm_call_start(
         self,
@@ -145,12 +153,12 @@ class NemoRelayHermesCallbackHandler:
         try:
             handle = nemo_relay.scope.push(
                 f"llm:{model}",
-                nemo_relay.ScopeType.LLM,
+                _resolve_scope_type("LLM"),
                 data={"llm_call_id": llm_call_id, "model": model},
                 input=request_data,
             )
             with self._lock:
-                self._active_scopes[llm_call_id] = handle
+                self._active_scopes[f"llm:{llm_call_id}"] = handle
         except Exception:
             _logger.debug("on_llm_call_start failed", exc_info=True)
 
@@ -161,7 +169,7 @@ class NemoRelayHermesCallbackHandler:
         *args: typing.Any,
         **kwargs: typing.Any,
     ) -> None:
-        self._close_scope(llm_call_id, output=response_data if isinstance(response_data, dict) else None)
+        self._close_scope(f"llm:{llm_call_id}", output=response_data if isinstance(response_data, dict) else None)
 
     def on_subagent_start(
         self,
@@ -174,16 +182,16 @@ class NemoRelayHermesCallbackHandler:
         try:
             handle = nemo_relay.scope.push(
                 f"subagent:{agent_name}",
-                nemo_relay.ScopeType.Agent,
+                _resolve_scope_type("Agent"),
                 data={"subagent_id": subagent_id, "agent_name": agent_name},
             )
             with self._lock:
-                self._active_scopes[subagent_id] = handle
+                self._active_scopes[f"sub:{subagent_id}"] = handle
         except Exception:
             _logger.debug("on_subagent_start failed", exc_info=True)
 
     def on_subagent_end(self, subagent_id: str, *args: typing.Any, **kwargs: typing.Any) -> None:
-        self._close_scope(subagent_id)
+        self._close_scope(f"sub:{subagent_id}")
 
     def on_task_start(
         self,
@@ -196,16 +204,16 @@ class NemoRelayHermesCallbackHandler:
         try:
             handle = nemo_relay.scope.push(
                 f"task:{task_name}",
-                nemo_relay.ScopeType.Task,
+                _resolve_scope_type("Task"),
                 data={"task_id": task_id, "task_name": task_name},
             )
             with self._lock:
-                self._active_scopes[task_id] = handle
+                self._active_scopes[f"task:{task_id}"] = handle
         except Exception:
             _logger.debug("on_task_start failed", exc_info=True)
 
     def on_task_end(self, task_id: str, *args: typing.Any, **kwargs: typing.Any) -> None:
-        self._close_scope(task_id)
+        self._close_scope(f"task:{task_id}")
 
     # -- internal ---------------------------------------------------------------
 

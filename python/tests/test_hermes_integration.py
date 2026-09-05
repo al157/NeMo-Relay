@@ -17,8 +17,8 @@ import pytest
 MOCK_HANDLE = MagicMock(name="ScopeHandle")
 
 
-@pytest.fixture(autouse=True)
-def _mock_relay_native():
+@pytest.fixture(name="mock_relay_native", autouse=True)
+def mock_relay_native_fixture():
     """Patch nemo_relay native calls so the tests run without the Rust runtime."""
     mock_native = MagicMock()
     mock_native.push_scope.return_value = MOCK_HANDLE
@@ -60,9 +60,9 @@ class TestHermesCallbackHandler:
         from nemo_relay.integrations.hermes.callbacks import NemoRelayHermesCallbackHandler
         return NemoRelayHermesCallbackHandler(agent_name="test-agent")
 
-    def test_session_scope_hierarchy(self, _mock_relay_native):
+    def test_session_scope_hierarchy(self, mock_relay_native):
         handler = self._make_handler()
-        nr = _mock_relay_native
+        nr = mock_relay_native
 
         handler.on_session_start("sess-1")
         nr.scope.push.assert_called()
@@ -71,9 +71,9 @@ class TestHermesCallbackHandler:
         handler.on_session_end("sess-1")
         nr.scope.pop.assert_called()
 
-    def test_tool_call_scope(self, _mock_relay_native):
+    def test_tool_call_scope(self, mock_relay_native):
         handler = self._make_handler()
-        nr = _mock_relay_native
+        nr = mock_relay_native
 
         handler.on_tool_call_start("tc-1", "web_search", {"query": "hello"})
         nr.scope.push.assert_called()
@@ -84,9 +84,9 @@ class TestHermesCallbackHandler:
         handler.on_tool_call_end("tc-1", result="found 5 results")
         nr.scope.pop.assert_called()
 
-    def test_subagent_scope(self, _mock_relay_native):
+    def test_subagent_scope(self, mock_relay_native):
         handler = self._make_handler()
-        nr = _mock_relay_native
+        nr = mock_relay_native
 
         handler.on_subagent_start("sub-1", "worker")
         nr.scope.push.assert_called()
@@ -95,9 +95,9 @@ class TestHermesCallbackHandler:
         handler.on_subagent_end("sub-1")
         nr.scope.pop.assert_called()
 
-    def test_llm_scope(self, _mock_relay_native):
+    def test_llm_scope(self, mock_relay_native):
         handler = self._make_handler()
-        nr = _mock_relay_native
+        nr = mock_relay_native
 
         handler.on_llm_call_start("llm-1", "gpt-4o", {"messages": []})
         nr.scope.push.assert_called()
@@ -106,9 +106,9 @@ class TestHermesCallbackHandler:
         handler.on_llm_call_end("llm-1")
         nr.scope.pop.assert_called()
 
-    def test_task_scope(self, _mock_relay_native):
+    def test_task_scope(self, mock_relay_native):
         handler = self._make_handler()
-        nr = _mock_relay_native
+        nr = mock_relay_native
 
         handler.on_task_start("task-1", "daily-healthcheck")
         nr.scope.push.assert_called()
@@ -117,7 +117,7 @@ class TestHermesCallbackHandler:
         handler.on_task_end("task-1")
         nr.scope.pop.assert_called()
 
-    def test_unknown_event_does_not_crash(self, _mock_relay_native):
+    def test_unknown_event_does_not_crash(self, mock_relay_native):
         handler = self._make_handler()
         # Closing a scope that was never opened should be a no-op
         handler.on_session_end("nonexistent")
@@ -128,7 +128,7 @@ class TestHermesCallbackHandler:
 class TestHermesMiddleware:
     def test_redacts_secrets(self):
         from nemo_relay.integrations.hermes.middleware import _redact_secrets
-        args = {"query": "hello", "api_key": "sk-secret", "password": "hunter2"}
+        args = {"query": "hello", "api_key": "sk-secret", "password": "test-password-value"}
         result = _redact_secrets(args)
         assert result["query"] == "hello"
         assert result["api_key"] == "***REDACTED***"
@@ -146,18 +146,18 @@ class TestHermesMiddleware:
         result = mw._block_denied_tools("safe_tool", {"x": 1})
         assert result == {"x": 1}
 
-    def test_payload_size_guard_rejects_oversized(self, _mock_relay_native):
+    def test_payload_size_guard_rejects_oversized(self, mock_relay_native):
         from nemo_relay.integrations.hermes.middleware import NemoRelayHermesMiddleware
-        nr = _mock_relay_native
+        nr = mock_relay_native
         mw = NemoRelayHermesMiddleware(max_tool_args_size=10)
         big_request = MagicMock()
         big_request.content = {"messages": ["a" * 1000]}
         with pytest.raises(ValueError, match="exceeds configured limit"):
             mw._guard_llm_payload_size("test", big_request, None)
 
-    def test_register_idempotent(self, _mock_relay_native):
+    def test_register_idempotent(self, mock_relay_native):
         from nemo_relay.integrations.hermes.middleware import NemoRelayHermesMiddleware
-        nr = _mock_relay_native
+        nr = mock_relay_native
         mw = NemoRelayHermesMiddleware()
         mw.register()
         mw.register()  # second call should be no-op
@@ -219,3 +219,37 @@ class TestHermesSubscriber:
         sub = HermesATOFSubscriber()
         sub({})
         assert sub.events[0]["event_type"] == "unknown"
+
+    def test_deep_copy_event_data(self):
+        from nemo_relay.integrations.hermes.subscriber import HermesATOFSubscriber
+        sub = HermesATOFSubscriber()
+        original = {"event_type": "x", "data": {"nested": [1, 2]}}
+        sub(original)
+        # Mutating the original after __call__ should not affect stored events
+        original["data"]["nested"].append(3)
+        assert sub.events[0]["data"]["nested"] == [1, 2]
+
+
+# ---- Recursive redaction tests ---------------------------------------------
+class TestRecursiveRedaction:
+    def test_nested_dict_secret_redacted(self):
+        from nemo_relay.integrations.hermes.middleware import _redact_secrets
+        args = {"config": {"api_key": "sk-nested", "name": "ok"}, "extra": [1, {"token": "tok"}]}
+        result = _redact_secrets(args)
+        assert result["config"]["api_key"] == "***REDACTED***"
+        assert result["config"]["name"] == "ok"
+        assert result["extra"][1]["token"] == "***REDACTED***"
+
+
+# ---- Event ID isolation tests ----------------------------------------------
+class TestEventIDIsolation:
+    def test_same_id_different_types_do_not_collide(self, mock_relay_native):
+        from nemo_relay.integrations.hermes.callbacks import NemoRelayHermesCallbackHandler
+        handler = NemoRelayHermesCallbackHandler(agent_name="test-agent")
+        # Use same raw ID "evt-1" for different event types
+        handler.on_tool_call_start("evt-1", "my_tool")
+        handler.on_turn_start("evt-1", "sess-1")
+        # Both scopes should be tracked independently
+        assert "tool:evt-1" in handler._active_scopes
+        assert "turn:evt-1" in handler._active_scopes
+        assert handler._active_scopes["tool:evt-1"] is not handler._active_scopes["turn:evt-1"]

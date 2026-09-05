@@ -18,14 +18,21 @@ _REDACTED = "***REDACTED***"
 
 
 def _redact_secrets(args: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy of *args* with secret-looking values redacted."""
-    redacted: dict[str, Any] = {}
-    for key, value in args.items():
-        if key.lower() in _SECRET_KEYS:
-            redacted[key] = _REDACTED
-        else:
-            redacted[key] = value
-    return redacted
+    """Return a copy of *args* with secret-looking values redacted recursively."""
+
+    def _walk(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {
+                _walk(k) if isinstance(k, str) else k: _REDACTED
+                if isinstance(k, str) and k.lower() in _SECRET_KEYS
+                else _walk(v)
+                for k, v in obj.items()
+            }
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(_walk(item) for item in obj)
+        return obj
+
+    return _walk(args)
 
 
 def _payload_size(payload: Mapping[str, Any] | None) -> int:
@@ -60,47 +67,52 @@ class NemoRelayHermesMiddleware:
         self._agent_name = agent_name
         self._blocked_tools = frozenset(blocked_tools or ())
         self._max_tool_args_size = max_tool_args_size
-        self._registered = False
+        self._registered_guards: set[str] = set()
 
     # -- registration ----------------------------------------------------------
 
     def register(self) -> None:
         """Register all guardrails and intercepts with the NeMo Relay runtime."""
-        if self._registered:
-            return
-        self._registered = True
-
         # Tool argument sanitisation
-        try:
-            nemo_relay.guardrails.register_tool_sanitize_request(
-                f"{self._agent_name}-redact",
-                10,
-                self._sanitize_tool_args,
-            )
-        except Exception:
-            _logger.debug("Failed to register tool sanitiser", exc_info=True)
+        guard_name_redact = f"{self._agent_name}-redact"
+        if guard_name_redact not in self._registered_guards:
+            try:
+                nemo_relay.guardrails.register_tool_sanitize_request(
+                    guard_name_redact,
+                    10,
+                    self._sanitize_tool_args,
+                )
+                self._registered_guards.add(guard_name_redact)
+            except Exception:
+                _logger.debug("Failed to register tool sanitiser", exc_info=True)
 
         # Tool blocking
         if self._blocked_tools:
-            try:
-                nemo_relay.guardrails.register_tool_sanitize_request(
-                    f"{self._agent_name}-block",
-                    5,
-                    self._block_denied_tools,
-                )
-            except Exception:
-                _logger.debug("Failed to register tool blocker", exc_info=True)
+            guard_name_block = f"{self._agent_name}-block"
+            if guard_name_block not in self._registered_guards:
+                try:
+                    nemo_relay.guardrails.register_tool_sanitize_request(
+                        guard_name_block,
+                        5,
+                        self._block_denied_tools,
+                    )
+                    self._registered_guards.add(guard_name_block)
+                except Exception:
+                    _logger.debug("Failed to register tool blocker", exc_info=True)
 
         # LLM payload size guard
-        try:
-            nemo_relay.intercepts.register_llm_request(
-                f"{self._agent_name}-size-guard",
-                10,
-                False,
-                self._guard_llm_payload_size,
-            )
-        except Exception:
-            _logger.debug("Failed to register LLM size guard", exc_info=True)
+        guard_name_size = f"{self._agent_name}-size-guard"
+        if guard_name_size not in self._registered_guards:
+            try:
+                nemo_relay.intercepts.register_llm_request(
+                    guard_name_size,
+                    10,
+                    False,
+                    self._guard_llm_payload_size,
+                )
+                self._registered_guards.add(guard_name_size)
+            except Exception:
+                _logger.debug("Failed to register LLM size guard", exc_info=True)
 
     # -- guard callbacks -------------------------------------------------------
 
